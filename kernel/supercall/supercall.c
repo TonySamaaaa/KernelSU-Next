@@ -11,6 +11,7 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/utsname.h> // utsname() and uts_sem
+#include <linux/reboot.h>
 
 #include "uapi/supercall.h"
 #include "supercall/internal.h"
@@ -18,6 +19,7 @@
 #include "util.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
+#include "reboot_guard.h"
 
 #include "sulog/event.h"
 
@@ -127,6 +129,25 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
     unsigned int cmd = (unsigned int)PT_REGS_PARM3(real_regs);
     unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
     unsigned long reply = (unsigned long)arg4;
+
+    /*
+     * Check if this is a real reboot(2) call (not our magic-number supercalls).
+     * Linux reboot(2) uses LINUX_REBOOT_MAGIC1 and LINUX_REBOOT_MAGIC2 or
+     * variant magic constants.
+     */
+    if (magic1 == LINUX_REBOOT_MAGIC1 &&
+        (magic2 == LINUX_REBOOT_MAGIC2 ||
+         magic2 == LINUX_REBOOT_MAGIC2A ||
+         magic2 == LINUX_REBOOT_MAGIC2B ||
+         magic2 == LINUX_REBOOT_MAGIC2C)) {
+        if (ksu_should_intercept_reboot(cmd, current->pid)) {
+            pr_info("ksu: reboot guard Layer 3: swallowing reboot(2) from PID %d\n",
+                    current->pid);
+            ksu_set_soft_reboot_in_progress(true);
+            PT_REGS_PARM3(real_regs) = 0;
+            return 0;
+        }
+    }
 
     /* Check if this is a request to install KSU fd */
     if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {

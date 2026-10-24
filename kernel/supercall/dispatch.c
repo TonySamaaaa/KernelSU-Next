@@ -15,6 +15,7 @@
 #include "runtime/ksud_boot.h"
 #include "feature/kernel_umount.h"
 #include "manager/manager_identity.h"
+#include "reboot_guard.h"
 #include "selinux/selinux.h"
 #include "infra/file_wrapper.h"
 #include "hook/tp_marker.h"
@@ -797,6 +798,12 @@ static int do_disable_escape_to_root(void __user *arg)
     return 0;
 }
 
+static int do_real_reboot_once(void __user *arg)
+{
+    ksu_real_reboot_once();
+    return 0;
+}
+
 // IOCTL handlers mapping table
 // clang-format off
 static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
@@ -945,6 +952,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .handler = do_disable_escape_to_root, 
         .perm_check = only_root,
         .allow_su_session = true
+    },
+    {
+        .cmd = KSU_IOCTL_REAL_REBOOT_ONCE,
+        .name = "REAL_REBOOT_ONCE",
+        .handler = do_real_reboot_once,
+        .perm_check = only_root
     },
     {
         .cmd = KSU_IOCTL_GET_HOOK_MODE,
