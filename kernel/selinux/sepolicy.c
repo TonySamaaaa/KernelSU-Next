@@ -94,6 +94,73 @@ static bool add_typeattribute(struct policydb *db, const char *type,
 #define symtab_insert(s, name, datum) hashtab_insert((s)->table, name, datum)
 #endif
 
+#include "ksu_kallsyms.h"
+
+#ifdef symtab_search
+#undef symtab_search
+#endif
+#define symtab_search (ksu_syms.symtab_search)
+
+#ifdef symtab_insert
+#undef symtab_insert
+#endif
+#define symtab_insert (ksu_syms.symtab_insert)
+
+#define __hashtab_insert (ksu_syms.__hashtab_insert)
+#define hashtab_insert(h, key, datum, key_params)                              \
+    (ksu_hashtab_insert((h), (key), (datum), (key_params)))
+
+/* hashtab_insert 的第 4 个参数是按值传递的 key_params，
+ * 而内核未导出的 __hashtab_insert 签名不同，这里完整实现插入逻辑 */
+static inline int ksu_hashtab_insert(struct hashtab *h, void *key, void *datum,
+                                     struct hashtab_key_params key_params)
+{
+        u32 hvalue;
+        struct hashtab_node *prev, *cur;
+
+        cond_resched();
+
+        if (!h->size || h->nel == HASHTAB_MAX_NODES)
+                return -EINVAL;
+
+        hvalue = key_params.hash(key) & (h->size - 1);
+        prev = NULL;
+        cur = h->htable[hvalue];
+        while (cur) {
+                int cmp = key_params.cmp(key, cur->key);
+
+                if (cmp == 0)
+                        return -EEXIST;
+                if (cmp < 0)
+                        break;
+                prev = cur;
+                cur = cur->next;
+        }
+
+        return __hashtab_insert(h, prev ? &prev->next : &h->htable[hvalue],
+                                key, datum);
+}
+#define policydb_filenametr_search (ksu_syms.policydb_filenametr_search)
+#define ebitmap_get_bit (ksu_syms.ebitmap_get_bit)
+#define ebitmap_set_bit (ksu_syms.ebitmap_set_bit)
+#define avtab_search_node (ksu_syms.avtab_search_node)
+#define avtab_search_node_next (ksu_syms.avtab_search_node_next)
+#define avtab_insert_nonunique (ksu_syms.avtab_insert_nonunique)
+#define selinux_status_update_policyload (ksu_syms.selinux_status_update_policyload)
+#define selnl_notify_policyload (ksu_syms.selnl_notify_policyload)
+#define policydb_destroy (ksu_syms.policydb_destroy)
+#define policydb_read (ksu_syms.policydb_read)
+#define policydb_write (ksu_syms.policydb_write)
+#define avtab_alloc (ksu_syms.avtab_alloc)
+#define avtab_destroy (ksu_syms.avtab_destroy)
+#define sidtab_destroy (ksu_syms.sidtab_destroy)
+#define ebitmap_cmp (ksu_syms.ebitmap_cmp)
+#define ebitmap_contains (ksu_syms.ebitmap_contains)
+#define ebitmap_destroy (ksu_syms.ebitmap_destroy)
+#define cond_compute_av (ksu_syms.cond_compute_av)
+#define policydb_context_isvalid (ksu_syms.policydb_context_isvalid)
+#define security_bounded_transition (ksu_syms.security_bounded_transition)
+
 #define avtab_for_each(avtab, cur) ksu_hash_for_each(avtab.htable, avtab.nslot, cur)
 
 static struct avtab_node *get_avtab_node(struct policydb *db,

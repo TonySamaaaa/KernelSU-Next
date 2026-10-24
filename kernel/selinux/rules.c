@@ -14,6 +14,14 @@
 #include "ss/services.h"
 #include "linux/lsm_audit.h" // IWYU pragma: keep
 #include "xfrm.h"
+#include "ksu_kallsyms.h"
+
+static inline struct selinux_state *ksu_selinux_state_ptr(void)
+{
+    return ksu_syms.selinux_state;
+}
+
+#define selinux_state (*ksu_syms.selinux_state)
 
 struct selinux_policy *backup_sepolicy;
 
@@ -21,23 +29,24 @@ struct selinux_policy *backup_sepolicy;
 
 #define ALL NULL
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
-extern int avc_ss_reset(u32 seqno);
-#else
-extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
-#endif
 // reset avc cache table, otherwise the new rules will not take effect if already denied
 static void reset_avc_cache()
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
-    avc_ss_reset(0);
-    selnl_notify_policyload(0);
-    selinux_status_update_policyload(0);
+    if (ksu_syms.avc_ss_reset)
+        ((int (*)(u32))ksu_syms.avc_ss_reset)(0);
+    if (ksu_syms.selnl_notify_policyload)
+        ksu_syms.selnl_notify_policyload(0);
+    if (ksu_syms.selinux_status_update_policyload)
+        ksu_syms.selinux_status_update_policyload(0);
 #else
-    struct selinux_avc *avc = selinux_state.avc;
-    avc_ss_reset(avc, 0);
-    selnl_notify_policyload(0);
-    selinux_status_update_policyload(&selinux_state, 0);
+    struct selinux_avc *avc = ksu_selinux_state_ptr() ? selinux_state.avc : NULL;
+    if (ksu_syms.avc_ss_reset)
+        ((int (*)(struct selinux_avc *, u32))ksu_syms.avc_ss_reset)(avc, 0);
+    if (ksu_syms.selnl_notify_policyload)
+        ksu_syms.selnl_notify_policyload(0);
+    if (ksu_syms.selinux_status_update_policyload && ksu_selinux_state_ptr())
+        ((void (*)(void *, int))ksu_syms.selinux_status_update_policyload)(&selinux_state, 0);
 #endif
     selinux_xfrm_notify_policyload();
 }
@@ -46,6 +55,11 @@ void apply_kernelsu_rules()
 {
     struct selinux_policy *pol, *old_pol;
     struct policydb *db;
+
+    if (!ksu_selinux_state_ptr()) {
+        pr_err("selinux_state symbol unavailable\n");
+        return;
+    }
 
     if (!getenforce()) {
         pr_info("SELinux permissive or disabled, apply rules!\n");
@@ -71,7 +85,8 @@ void apply_kernelsu_rules()
             ksu_destroy_sepolicy(backup_sepolicy);
             backup_sepolicy = NULL;
         } else {
-            int ret = policydb_load_isids(&backup_sepolicy->policydb, backup_sepolicy->sidtab);
+            int ret = ksu_syms.policydb_load_isids ?
+                ksu_syms.policydb_load_isids(&backup_sepolicy->policydb, backup_sepolicy->sidtab) : -ENOENT;
             if (ret) {
                 pr_err("failed to load isids for backup sepolicy: %d!\n", ret);
                 kfree(backup_sepolicy->sidtab);

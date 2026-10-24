@@ -1,5 +1,10 @@
 kernelsu-objs := core/init.o
 
+kernelsu-objs += compat/samsung_kdp.o
+kernelsu-objs += compat/samsung_defex.o
+kernelsu-objs += ksu_kallsyms.o ksu_cfi.o ksu_pte.o
+kernelsu-objs += reboot_guard.o
+
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/module_blacklist.o
 kernelsu-objs += feature/sulog.o
@@ -70,22 +75,35 @@ endif
 ifeq ($(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER),y)
 ccflags-y += -DCONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=1
 endif
+ifeq ($(CONFIG_KSU_SAMSUNG_KDP),y)
+ccflags-y += -DCONFIG_KSU_SAMSUNG_KDP=1
+endif
+ifeq ($(CONFIG_KSU_SAMSUNG_RKP),y)
+ccflags-y += -DCONFIG_KSU_SAMSUNG_RKP=1
+endif
+ifeq ($(CONFIG_KSU_SAMSUNG_DEFEX),y)
+ccflags-y += -DCONFIG_KSU_SAMSUNG_DEFEX=1
+endif
 endif
 
 ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
 
-ifneq ($(KBUILD_EXTMOD),)
+ifneq ($(src),)
+ifeq ($(filter /%,$(src)),)
+KSU_KERNEL_DIR := $(srctree)/$(src)
+else
+KSU_KERNEL_DIR := $(src)
+endif
+else ifneq ($(KBUILD_EXTMOD),)
 # 6.18 exports the external module source as srcroot when M/MO are used.
 ifneq ($(srcroot),)
 KSU_KERNEL_DIR := $(srcroot)
 else
 KSU_KERNEL_DIR := $(KBUILD_EXTMOD)
 endif
-else ifeq ($(filter /%,$(src)),)
-KSU_KERNEL_DIR := $(srctree)/$(src)
 else
-KSU_KERNEL_DIR := $(src)
+KSU_KERNEL_DIR := $(srctree)
 endif
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include

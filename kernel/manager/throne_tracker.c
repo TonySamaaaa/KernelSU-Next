@@ -215,7 +215,7 @@ static void search_manager(const char *path, int depth, struct list_head *uid_da
 			}
 
 			candidate_path[0] = 0; // Reset for this iteration
-			iterate_dir(file, &ctx.ctx);
+			ksu_syms.iterate_dir(file, &ctx.ctx);
 			filp_close(file, NULL);
 
 			if (!candidate_path[0])
@@ -259,7 +259,7 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
 void track_throne(bool prune_only)
 {
 	mutex_lock(&throne_tracker_mutex);
-	const struct cred *old_cred = override_creds(ksu_cred);
+	const struct cred *old_cred = ksu_syms.override_creds ? ksu_syms.override_creds(ksu_cred) : NULL;
 	struct file *fp = filp_open(SYSTEM_PACKAGES_LIST_PATH, O_RDONLY, 0);
 	if (IS_ERR(fp)) {
 		pr_err("%s: open " SYSTEM_PACKAGES_LIST_PATH " failed: %ld\n", __func__,
@@ -275,13 +275,13 @@ void track_throne(bool prune_only)
 	loff_t line_start = 0;
 	char buf[KSU_MAX_PACKAGE_NAME];
 	for (;;) {
-		ssize_t count = kernel_read(fp, &chr, sizeof(chr), &pos);
+		ssize_t count = ksu_syms.kernel_read(fp, &chr, sizeof(chr), &pos);
 		if (count != sizeof(chr))
 			break;
 		if (chr != '\n')
 			continue;
 
-		count = kernel_read(fp, buf, sizeof(buf) - 1, &line_start);
+		count = ksu_syms.kernel_read(fp, buf, sizeof(buf) - 1, &line_start);
 		if (count <= 0) {
 			break;
 		}
@@ -400,7 +400,8 @@ out:
 		kfree(np);
 	}
 out_revert_cred:
-	revert_creds(old_cred);
+	if (old_cred && ksu_syms.revert_creds)
+		ksu_syms.revert_creds(old_cred);
 	mutex_unlock(&throne_tracker_mutex);
 }
 

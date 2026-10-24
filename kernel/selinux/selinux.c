@@ -6,6 +6,7 @@
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
 #include "infra/symbol_resolver.h"
+#include "ksu_kallsyms.h"
 
 #ifdef CONFIG_ANDROID
 #define ksu_security_secid_to_secctx security_secid_to_secctx
@@ -89,7 +90,7 @@ static void ksu_security_release_secctx(char *secdata, u32 seclen)
  * string-based comparison path; this degrades performance only and
  * does not cause a functional failure.
  */
-static u32 cached_su_sid __read_mostly = 0;
+u32 cached_su_sid __read_mostly = 0;
 static u32 cached_zygote_sid __read_mostly = 0;
 static u32 cached_init_sid __read_mostly = 0;
 static u32 cached_adbd_sid __read_mostly = 0;
@@ -144,20 +145,21 @@ void setup_ksu_cred(void)
 void setenforce(bool enforce)
 {
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-    selinux_state.enforcing = enforce;
+    if (ksu_syms.selinux_state)
+        ksu_syms.selinux_state->enforcing = enforce;
 #endif
 }
 
 bool getenforce(void)
 {
 #ifdef CONFIG_SECURITY_SELINUX_DISABLE
-    if (selinux_state.disabled) {
+    if (ksu_syms.selinux_state && ksu_syms.selinux_state->disabled) {
         return false;
     }
 #endif
 
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-    return selinux_state.enforcing;
+    return ksu_syms.selinux_state ? ksu_syms.selinux_state->enforcing : true;
 #else
     return true;
 #endif
@@ -171,11 +173,13 @@ struct lsm_context {
 
 static int __ksu_security_secid_to_secctx(u32 secid, struct lsm_context *cp)
 {
-    return ksu_security_secid_to_secctx(secid, &cp->context, &cp->len);
+    return ksu_syms.security_secid_to_secctx ?
+        ksu_syms.security_secid_to_secctx(secid, &cp->context, &cp->len) : -ENOSYS;
 }
 static void __ksu_security_release_secctx(struct lsm_context *cp)
 {
-    ksu_security_release_secctx(cp->context, cp->len);
+    if (ksu_syms.security_release_secctx)
+        ksu_syms.security_release_secctx(cp->context, cp->len);
 }
 #else
 #define __ksu_security_secid_to_secctx ksu_security_secid_to_secctx
@@ -218,7 +222,7 @@ void cache_sid(void)
         pr_info("Cached init SID: %u\n", cached_init_sid);
     }
 
-    err = security_secctx_to_secid(ADBD_CONTEXT, strlen(ADBD_CONTEXT), &cached_adbd_sid);
+    err = ksu_security_secctx_to_secid(ADBD_CONTEXT, strlen(ADBD_CONTEXT), &cached_adbd_sid);
     if (err) {
         pr_warn("Failed to cache adbd SID: %d\n", err);
         cached_adbd_sid = 0;
@@ -298,7 +302,7 @@ bool is_adbd(const struct cred *cred)
 
 void escape_to_root_for_adb_root(void)
 {
-    struct cred *cred = prepare_creds();
+    struct cred *cred = ksu_syms.prepare_creds ? ksu_syms.prepare_creds() : NULL;
     if (!cred) {
         pr_err("Failed to prepare adbd's creds!\n");
         return;
@@ -306,8 +310,10 @@ void escape_to_root_for_adb_root(void)
 
     if (transive_to_domain(KERNEL_SU_CONTEXT, cred, true)) {
         pr_err("transive domain failed.\n");
-        abort_creds(cred);
+        if (ksu_syms.abort_creds)
+            ksu_syms.abort_creds(cred);
         return;
     }
-    commit_creds(cred);
+    if (ksu_syms.commit_creds)
+        ksu_syms.commit_creds(cred);
 }

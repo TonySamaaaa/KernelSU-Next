@@ -5,6 +5,8 @@
 #include <linux/cred.h>
 #include <linux/workqueue.h>
 
+#include "ksu_kallsyms.h"
+
 #define KERNEL_SU_VERSION KSU_VERSION
 #define KERNEL_SU_VERSION_TAG KSU_VERSION_TAG
 
@@ -19,7 +21,9 @@ extern bool ksu_no_custom_rc;
 
 #ifdef CONFIG_ANDROID
 #include <linux/security.h>
-#define ksu_security_secctx_to_secid security_secctx_to_secid
+#define ksu_security_secctx_to_secid(secdata, seclen, secid) \
+	(ksu_syms.security_secctx_to_secid ? \
+	 ksu_syms.security_secctx_to_secid((secdata), (seclen), (secid)) : -1)
 #else
 int ksu_security_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid);
 #endif

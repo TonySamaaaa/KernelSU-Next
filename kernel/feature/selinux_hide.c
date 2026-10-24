@@ -1,3 +1,5 @@
+#include "ksu_kallsyms.h"
+
 #include "selinux_hide.h"
 #include "infra/symbol_resolver.h"
 #include "linux/jump_label.h"
@@ -30,6 +32,59 @@
 #include "ksu.h"
 #include "policy/feature.h"
 #include "hook/lsm_hook.h"
+#ifdef avc_has_perm
+#undef avc_has_perm
+#endif
+#define avc_has_perm (ksu_syms.avc_has_perm)
+
+#ifdef sidtab_destroy
+#undef sidtab_destroy
+#endif
+#define sidtab_destroy (ksu_syms.sidtab_destroy)
+
+#ifdef selinux_state
+#undef selinux_state
+#endif
+#define selinux_state (*ksu_syms.selinux_state)
+
+#define ebitmap_get_bit (ksu_syms.ebitmap_get_bit)
+#define ebitmap_set_bit (ksu_syms.ebitmap_set_bit)
+#define ebitmap_cmp (ksu_syms.ebitmap_cmp)
+#define ebitmap_contains (ksu_syms.ebitmap_contains)
+#define ebitmap_destroy (ksu_syms.ebitmap_destroy)
+#define cond_compute_av (ksu_syms.cond_compute_av)
+#define policydb_context_isvalid (ksu_syms.policydb_context_isvalid)
+#define security_bounded_transition (ksu_syms.security_bounded_transition)
+#define avtab_search_node (ksu_syms.avtab_search_node)
+#define avtab_search_node_next (ksu_syms.avtab_search_node_next)
+#define symtab_search (ksu_syms.symtab_search)
+#define __hashtab_insert (ksu_syms.__hashtab_insert)
+#define sidtab_context_to_sid (ksu_syms.sidtab_context_to_sid)
+#define sidtab_search_entry (ksu_syms.sidtab_search_entry)
+#define sidtab_sid2str_get (ksu_syms.sidtab_sid2str_get)
+#define sidtab_sid2str_put (ksu_syms.sidtab_sid2str_put)
+#define mls_compute_context_len (ksu_syms.mls_compute_context_len)
+#define mls_context_to_sid (ksu_syms.mls_context_to_sid)
+#define mls_sid_to_context (ksu_syms.mls_sid_to_context)
+
+/* 重定向会引用内核未导出 SELinux 内部符号的 static inline 函数 */
+#define mls_level_eq(l1, l2)                                                   \
+    ((l1)->sens == (l2)->sens && ebitmap_cmp(&(l1)->cat, &(l2)->cat))
+#define mls_level_dom(l1, l2)                                                  \
+    ((l1)->sens >= (l2)->sens && ebitmap_contains(&(l1)->cat, &(l2)->cat, 0))
+#define context_destroy(c)                                                     \
+    do {                                                                       \
+        (c)->user = (c)->role = (c)->type = 0;                                 \
+        kfree((c)->str);                                                       \
+        (c)->str = NULL;                                                       \
+        (c)->len = 0;                                                          \
+        ebitmap_destroy(&(c)->range.level[0].cat);                             \
+        ebitmap_destroy(&(c)->range.level[1].cat);                             \
+        mls_context_init(c);                                                   \
+    } while (0)
+#define sidtab_search(s, sid)                                                  \
+    ({ struct sidtab_entry *_ksu_se = sidtab_search_entry((s), (sid));          \
+       _ksu_se ? &_ksu_se->context : NULL; })
 
 static DEFINE_MUTEX(selinux_hide_mutex);
 static bool ksu_selinux_hide_enabled __read_mostly = false;
@@ -261,7 +316,7 @@ static int __nocfi my_setprocattr(const char *name, void *value, size_t size)
             return error2 ?: error;
     }
 
-    new = prepare_creds();
+    new = ksu_syms.prepare_creds ? ksu_syms.prepare_creds() : NULL;
     if (!new)
         return -ENOMEM;
 
@@ -276,7 +331,7 @@ static int __nocfi my_setprocattr(const char *name, void *value, size_t size)
     if (sid == 0)
         goto abort_change;
 
-    if (!current_is_single_threaded()) {
+    if (!ksu_syms.current_is_single_threaded()) {
         error = ksu_security_bounded_transition_compat(tsec->sid, sid);
         if (error)
             goto abort_change;
@@ -298,11 +353,13 @@ static int __nocfi my_setprocattr(const char *name, void *value, size_t size)
 
     tsec->sid = sid;
 
-    commit_creds(new);
+    if (ksu_syms.commit_creds)
+        ksu_syms.commit_creds(new);
     return size;
 
 abort_change:
-    abort_creds(new);
+    if (ksu_syms.abort_creds)
+        ksu_syms.abort_creds(new);
     return error;
 
 call_orig:
@@ -519,7 +576,8 @@ void ksu_selinux_hide_handle_second_stage()
     initialize_fake_status();
     // https://github.com/torvalds/linux/blame/e8c2f9fdadee7cbc75134dc463c1e0d856d6e5c7/security/selinux/selinuxfs.c#L2014
     if (fake_status) {
-        static_key_disable(&fake_status_initialize_key.key);
+        if (ksu_syms.static_key_disable)
+            ksu_syms.static_key_disable(&fake_status_initialize_key.key);
     } else {
         pr_warn("selinux_hide: fake status need late initialization\n");
     }
@@ -527,7 +585,8 @@ void ksu_selinux_hide_handle_second_stage()
 
 void ksu_selinux_hide_handle_post_fs_data()
 {
-    static_key_disable(&fake_status_initialize_key.key);
+    if (ksu_syms.static_key_disable)
+        ksu_syms.static_key_disable(&fake_status_initialize_key.key);
     if (!fake_status) {
         pr_err("selinux_hide: fake status is not initialized after post-fs-data!\n");
     }
@@ -563,7 +622,8 @@ void __init ksu_selinux_hide_init()
     if (ksu_late_loaded) {
         initialize_fake_status();
     } else {
-        static_key_enable(&fake_status_initialize_key.key);
+        if (ksu_syms.static_key_enable)
+            ksu_syms.static_key_enable(&fake_status_initialize_key.key);
     }
     hook_selinux_status_open();
 }

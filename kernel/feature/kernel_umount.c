@@ -45,7 +45,7 @@ extern int path_umount(struct path *path, int flags);
 
 static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 {
-	int err = path_umount(path, flags);
+	int err = ksu_syms.path_umount(path, flags);
 	if (err) {
 		pr_info("umount %s failed: %d\n", mnt, err);
 	}
@@ -110,7 +110,7 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 	// umount the target mnt
 	pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
-	const struct cred *saved = override_creds(ksu_cred);
+	const struct cred *saved = ksu_syms.override_creds ? ksu_syms.override_creds(ksu_cred) : NULL;
 
 	struct mount_entry *entry;
 	down_read(&mount_list_lock);
@@ -120,7 +120,8 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 	}
 	up_read(&mount_list_lock);
 
-	revert_creds(saved);
+	if (saved && ksu_syms.revert_creds)
+		ksu_syms.revert_creds(saved);
 
 	return 0;
 }

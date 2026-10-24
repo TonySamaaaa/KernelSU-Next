@@ -11,6 +11,7 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/utsname.h> // utsname() and uts_sem
+#include <linux/reboot.h>
 
 #include "uapi/supercall.h"
 #include "supercall/internal.h"
@@ -18,6 +19,8 @@
 #include "util.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
+#include "ksu_kallsyms.h"
+#include "reboot_guard.h"
 
 #include "sulog/event.h"
 
@@ -128,6 +131,25 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
     unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
     unsigned long reply = (unsigned long)arg4;
 
+    /*
+     * Check if this is a real reboot(2) call (not our magic-number supercalls).
+     * Linux reboot(2) uses LINUX_REBOOT_MAGIC1 and LINUX_REBOOT_MAGIC2 or
+     * variant magic constants.
+     */
+    if (magic1 == LINUX_REBOOT_MAGIC1 &&
+        (magic2 == LINUX_REBOOT_MAGIC2 ||
+         magic2 == LINUX_REBOOT_MAGIC2A ||
+         magic2 == LINUX_REBOOT_MAGIC2B ||
+         magic2 == LINUX_REBOOT_MAGIC2C)) {
+        if (ksu_should_intercept_reboot(cmd, current->pid)) {
+            pr_info("ksu: reboot guard Layer 3: swallowing reboot(2) from PID %d\n",
+                    current->pid);
+            ksu_set_soft_reboot_in_progress(true);
+            PT_REGS_PARM3(real_regs) = 0;
+            return 0;
+        }
+    }
+
     /* Check if this is a request to install KSU fd */
     if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {
         struct ksu_install_fd_tw *tw;
@@ -139,7 +161,7 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
         tw->outp = (int __user *)arg4;
         tw->cb.func = ksu_install_fd_tw_func;
 
-        if (task_work_add(current, &tw->cb, TWA_RESUME)) {
+        if (!ksu_syms.task_work_add || ksu_syms.task_work_add(current, &tw->cb, TWA_RESUME)) {
             kfree(tw);
             pr_warn("install fd add task_work failed\n");
         }
@@ -248,10 +270,12 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 
         struct new_utsname *u = utsname();
 
-        down_write(&uts_sem);
+        if (ksu_syms.uts_sem)
+            down_write((struct rw_semaphore *)ksu_syms.uts_sem);
         strscpy(u->release, release_buf, sizeof(u->release));
         strscpy(u->version, version_buf, sizeof(u->version));
-        up_write(&uts_sem);
+        if (ksu_syms.uts_sem)
+            up_write((struct rw_semaphore *)ksu_syms.uts_sem);
 
         // we write our confirmation on **
         if (copy_to_user((void __user *)arg4, &reply, sizeof(reply)))

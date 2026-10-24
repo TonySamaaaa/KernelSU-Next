@@ -18,6 +18,7 @@
 #include "hook/syscall_hook.h"
 #include "hook/syscall_event_bridge.h"
 #include "feature/adb_root.h"
+#include "ksu_kallsyms.h"
 
 static int ksu_handle_init_mark_tracker(const char __user **filename_user)
 {
@@ -68,7 +69,8 @@ DEFINE_STATIC_KEY_TRUE(ksud_execve_key);
 
 void ksu_stop_ksud_execve_hook()
 {
-    static_branch_disable(&ksud_execve_key);
+    if (ksu_syms.static_key_disable)
+        ksu_syms.static_key_disable(&ksud_execve_key.key);
 }
 
 static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *regs, bool execveat)

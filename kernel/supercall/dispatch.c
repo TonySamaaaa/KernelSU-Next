@@ -15,6 +15,7 @@
 #include "runtime/ksud_boot.h"
 #include "feature/kernel_umount.h"
 #include "manager/manager_identity.h"
+#include "reboot_guard.h"
 #include "selinux/selinux.h"
 #include "infra/file_wrapper.h"
 #include "hook/tp_marker.h"
@@ -22,6 +23,7 @@
 #include "sulog/event.h"
 #include "sulog/fd.h"
 #include "supercall/supercall.h"
+#include "ksu_kallsyms.h"
 
 static int do_grant_root(void __user *arg)
 {
@@ -761,7 +763,8 @@ static int do_set_init_pgrp(void __user *arg)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
         change_pid(pids, p, PIDTYPE_PGID, init_group);
 #else
-        change_pid(p, PIDTYPE_PGID, init_group);
+        if (ksu_syms.change_pid)
+            ksu_syms.change_pid(p, PIDTYPE_PGID, init_group);
 #endif
     }
 
@@ -794,6 +797,12 @@ static int do_get_sulog_fd(void __user *arg)
 static int do_disable_escape_to_root(void __user *arg)
 {
     set_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT);
+    return 0;
+}
+
+static int do_real_reboot_once(void __user *arg)
+{
+    ksu_real_reboot_once();
     return 0;
 }
 
@@ -945,6 +954,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .handler = do_disable_escape_to_root, 
         .perm_check = only_root,
         .allow_su_session = true
+    },
+    {
+        .cmd = KSU_IOCTL_REAL_REBOOT_ONCE,
+        .name = "REAL_REBOOT_ONCE",
+        .handler = do_real_reboot_once,
+        .perm_check = only_root
     },
     {
         .cmd = KSU_IOCTL_GET_HOOK_MODE,

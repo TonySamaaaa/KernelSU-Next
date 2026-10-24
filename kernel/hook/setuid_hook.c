@@ -16,6 +16,9 @@
 #include "hook/setuid_hook.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
+#include "manager/manager_observer.h"
+#include "manager/throne_tracker.h"
+#include "selinux/selinux.h"
 #include "infra/seccomp_cache.h"
 #include "supercall/supercall.h"
 #include "hook/tp_marker.h"
@@ -26,6 +29,20 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
     // we rely on the fact that zygote always call setresuid(3) with same uids
 
     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+
+    /* Samsung: deferred manager pairing - retry observer/rule setup when the
+     * manager app id or SELinux SID cache is not ready yet. */
+    if (unlikely(!ksu_is_manager_appid_valid())) {
+        ksu_observer_poll();
+        if (!ksu_is_manager_appid_valid()) {
+            track_throne(false);
+        }
+    }
+
+    if (unlikely(cached_su_sid <= 1)) {
+        apply_kernelsu_rules();
+        cache_sid();
+    }
 
     if (unlikely(is_uid_manager(new_uid))) {
         spin_lock_irq(&current->sighand->siglock);
