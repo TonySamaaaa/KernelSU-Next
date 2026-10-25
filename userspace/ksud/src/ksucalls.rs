@@ -223,6 +223,26 @@ pub fn grant_root() -> Result<()> {
     Ok(())
 }
 
+const KSU_REBOOT_MAGIC1: libc::c_long = 0xDEADBEEF;
+const KSU_CHANGE_MANAGER_UID_MAGIC: libc::c_long = 10006;
+
+/// Pin the manager appid (uid % 100000) via the root-only reboot supercall.
+/// The appid is pinned as a kprobe side effect; the reboot() syscall itself
+/// returns -EINVAL for the bogus magic, so its errno is ignored.
+pub fn set_manager_appid(appid: u32) -> Result<()> {
+    let mut reply: libc::c_ulong = 0;
+    unsafe {
+        libc::syscall(
+            libc::SYS_reboot,
+            KSU_REBOOT_MAGIC1,
+            KSU_CHANGE_MANAGER_UID_MAGIC,
+            appid as libc::c_ulong,
+            &mut reply as *mut libc::c_ulong,
+        );
+    }
+    Ok(())
+}
+
 fn report_event(event: u32) {
     let mut cmd = ksu_uapi::ksu_report_event_cmd { event };
     let _ = ksuctl(ksu_uapi::KSU_IOCTL_REPORT_EVENT, &raw mut cmd);

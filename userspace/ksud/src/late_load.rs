@@ -35,10 +35,26 @@ fn dump_process_info(label: &str) {
     );
 }
 
+fn get_pkg_appid(pkg: &str) -> Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(format!("/data/data/{pkg}"))
+        .with_context(|| format!("stat /data/data/{pkg}"))?
+        .uid();
+    Ok(uid % 100_000)
+}
+
 pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Result<()> {
-    utils::daemonize(false)?;
+    // NOTE: do NOT daemonize here. The loader (ghostlock) execs `ksud
+    // late-load`, waits for this process to exit, and only then verifies the
+    // kernelsu driver fd. Daemonizing forks and exits the foreground process
+    // immediately, so verification races the background ko load and reports
+    // "kernelsu driver fd unavailable" (status 13 = KSU_LD_VERIFY_FAIL).
     info!("late-load command triggered!");
     dump_process_info("late-load start");
+
+    // Copy the daemon before loading the module changes this process's
+    // security context. The remaining install steps require KernelSU policy.
+    utils::stage_daemon_from("/data/local/tmp/.ksud-stage").context("Failed to stage ksud")?;
 
     // 1. Check if KernelSU is already loaded
     if ksuinit::has_kernelsu() {
@@ -53,7 +69,24 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
 
 
         // 3. Get kernelsu.ko from embedded assets
-        let ko_name = format!("{kmi}_kernelsu.ko");
+        // KSUD_TREE=exynos (injected via UMH envp) selects the -exynos
+        // asset with pre-injected __versions; others keep the default one.
+        let ko_name = if std::env::var("KSUD_TREE").as_deref() == Ok("exynos")
+        {
+            let exynos_name = format!("{kmi}-exynos_kernelsu.ko");
+            match assets::get_asset_data(&exynos_name) {
+                Ok(_) => exynos_name,
+                Err(_) => {
+                    warn!(
+                        "KSUD_TREE=exynos set but {exynos_name} asset missing; \
+                         falling back to default asset"
+                    );
+                    format!("{kmi}_kernelsu.ko")
+                }
+            }
+        } else {
+            format!("{kmi}_kernelsu.ko")
+        };
         let ko_data = assets::get_asset_data(&ko_name)
             .with_context(|| format!("Failed to get {ko_name} from assets"))?;
 
@@ -70,6 +103,16 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
         dump_process_info("after load_module");
     }
 
+    // Pin the manager appid for jailbreak late-load.
+    match get_pkg_appid(package_name) {
+        Ok(appid) => {
+            if let Err(e) = crate::ksucalls::set_manager_appid(appid) {
+                warn!("set manager appid {appid} failed: {e:#}");
+            }
+        }
+        Err(e) => warn!("get manager appid failed: {e:#}"),
+    }
+
     // We need to reset stdin/stdout/stderr; otherwise, sending file descriptors via cmd transactions
     // will be blocked by SELinux because its fsec->sid is still u:r:su:s0 instead of u:r:ksu:s0.
     utils::reset_std()?;
@@ -80,7 +123,13 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
         warn!("clear temp configs failed: {e}");
     }
 
-    utils::install(None).context("Failed to install ksud")?;
+    // The daemon was already staged by stage_daemon_from() before the module
+    // load. finish_install() must NOT rewrite /data/adb/ksud: after the module
+    // changed this process's security context, writing the daemon path fails
+    // under Samsung KDP/SELinux and leaves a zero-byte file.
+    if let Err(e) = utils::finish_install(None) {
+        warn!("finish_install failed (non-fatal): {e:#}");
+    }
 
     // 5. Handle module updates
     if let Err(e) = handle_updated_modules() {

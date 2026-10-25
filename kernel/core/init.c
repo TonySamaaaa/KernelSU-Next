@@ -7,6 +7,7 @@
 #include <linux/workqueue.h>
 
 #include "policy/allowlist.h"
+#include "ksu_samsung_kdp.h"
 #include "policy/app_profile.h"
 #include "policy/feature.h"
 #include "klog.h" // IWYU pragma: keep
@@ -27,6 +28,7 @@
 #include "feature/shell_su_adb_only.h"
 #include "feature/sulog.h"
 #include "infra/symbol_resolver.h"
+#include "compat/samsung_defex.h"
 
 #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
 #include <asm/cpufeature.h>
@@ -93,6 +95,7 @@ module_param_named(bundled, ksu_bundled, bool, 0);
 
 int __init kernelsu_init(void)
 {
+	int ret;
 #ifdef KSU_MANAGER_PACKAGE
 	pr_info("welcome to KernelSU version " __stringify(KERNEL_SU_VERSION) ", package name " KSU_MANAGER_PACKAGE "\n");
 #else
@@ -133,13 +136,29 @@ int __init kernelsu_init(void)
 		pr_alert("shell is allowed at init!");
 	}
 
+#ifdef CONFIG_KSU_SAMSUNG_KDP
+	pr_info("Samsung KDP credential reference handling enabled\n");
+#endif
+
+	ksu_init_symbol_resolver();
+	ret = ksu_samsung_kdp_init();
+	if (ret)
+		return ret;
+
 	ksu_cred = prepare_creds();
 	if (!ksu_cred) {
 		pr_err("prepare cred failed!\n");
+		ksu_samsung_kdp_exit();
 		return -ENOSYS;
 	}
 
-	ksu_init_symbol_resolver();
+	ret = ksu_samsung_defex_init();
+	if (ret) {
+		ksu_put_cred(ksu_cred);
+		ksu_samsung_kdp_exit();
+		return ret;
+	}
+
 	ksu_syscall_hook_init();
 
 	// Block modules early, before vendor modules are loaded in second stage.
@@ -234,7 +253,9 @@ void __exit kernelsu_exit(void)
 	ksu_feature_exit();
 	ksu_module_blacklist_exit();
 
-	put_cred(ksu_cred);
+	ksu_samsung_defex_exit();
+	ksu_put_cred(ksu_cred);
+	ksu_samsung_kdp_exit();
 }
 
 #if NEED_OWN_STACKPROTECTOR
