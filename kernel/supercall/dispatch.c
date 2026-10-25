@@ -22,6 +22,7 @@
 #include "sulog/event.h"
 #include "sulog/fd.h"
 #include "supercall/supercall.h"
+#include "ksu_kallsyms.h"
 
 static int do_grant_root(void __user *arg)
 {
@@ -761,7 +762,8 @@ static int do_set_init_pgrp(void __user *arg)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
         change_pid(pids, p, PIDTYPE_PGID, init_group);
 #else
-        change_pid(p, PIDTYPE_PGID, init_group);
+        if (ksu_syms.change_pid)
+            ksu_syms.change_pid(p, PIDTYPE_PGID, init_group);
 #endif
     }
 

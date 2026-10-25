@@ -12,6 +12,14 @@
 #include "linux/stop_machine.h"
 #include "asm/cacheflush.h"
 #include "asm-generic/fixmap.h"
+#include "ksu_kallsyms.h"
+
+#ifndef FIXMAP_PAGE_NORMAL
+#define FIXMAP_PAGE_NORMAL PAGE_KERNEL
+#endif
+#ifndef FIXMAP_PAGE_CLEAR
+#define FIXMAP_PAGE_CLEAR __pgprot(0)
+#endif
 
 // https://github.com/fuqiuluo/ovo/blob/f7da411458e87d32438dc14fce5a3313ed0c967e/ovo/mmuhack.c#L21
 
@@ -21,7 +29,7 @@
 // since physical address 0 is a valid address.
 unsigned long phys_from_virt(unsigned long addr, int *err)
 {
-    struct mm_struct *mm = &init_mm;
+    struct mm_struct *mm = ksu_syms.init_mm;
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
@@ -30,7 +38,14 @@ unsigned long phys_from_virt(unsigned long addr, int *err)
 
     *err = 0;
 
-    pgd = pgd_offset(mm, addr);
+    if (!mm) {
+        if (ksu_syms.swapper_pg_dir)
+            pgd = (pgd_t *)ksu_syms.swapper_pg_dir + pgd_index(addr);
+        else
+            goto fail;
+    } else {
+        pgd = pgd_offset(mm, addr);
+    }
     if (pgd_none(*pgd) || pgd_bad(*pgd))
         goto fail;
     pr_debug("pgd of 0x%lx p=0x%lx v=0x%lx", addr, (uintptr_t)pgd,
@@ -92,18 +107,34 @@ fail:
 // However, it's backport to android13-5.10 but not to android12-5.10.
 // https://cs.android.com/android/_/android/kernel/common/+/6d9f07d8f1ffc310a6877153fe882f35ae380799
 // So we need to grep kernel source code to detect which one to use.
-#if KSU_NEW_DCACHE_FLUSH
-#define ksu_flush_dcache(start, sz)                                            \
-    ({                                                                         \
-        unsigned long __start = (start);                                       \
-        unsigned long __end = __start + (sz);                                  \
-        dcache_clean_inval_poc(__start, __end);                                \
-    })
-#define ksu_flush_icache(start, end) caches_clean_inval_pou(start, end)
-#else
-#define ksu_flush_dcache(start, sz) __flush_dcache_area((void *)start, sz)
+static inline void ksu_flush_dcache(void *start_ptr, size_t sz)
+{
+    unsigned long start = (unsigned long)start_ptr;
+    unsigned long end = start + sz;
+    unsigned long line_size;
+    unsigned long ctr;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    line_size = 4 << ((ctr >> 16) & 0xf);
+    start &= ~(line_size - 1);
+    for (; start < end; start += line_size) {
+        asm volatile("dc civac, %0" : : "r"(start) : "memory");
+    }
+    asm volatile("dsb sy\n" : : : "memory");
+}
 #define ksu_flush_icache(start, end) __flush_icache_range(start, end)
-#endif
+
+static inline void *ksu_set_fixmap_offset(int idx, phys_addr_t phys)
+{
+    if (ksu_syms.__set_fixmap)
+        ksu_syms.__set_fixmap(idx, phys, FIXMAP_PAGE_NORMAL);
+    return (void *)__fix_to_virt(idx) + (phys & (PAGE_SIZE - 1));
+}
+
+static inline void ksu_clear_fixmap(int idx)
+{
+    if (ksu_syms.__set_fixmap)
+        ksu_syms.__set_fixmap(idx, 0, FIXMAP_PAGE_CLEAR);
+}
 
 struct patch_text_info {
     void *dst;
@@ -148,12 +179,13 @@ static int ksu_patch_text_nosync(void *dst, void *src, size_t len, int flags)
     }
     pr_debug("phy addr for patch 0x%lx: 0x%lx\n", p, phy);
 
-    void *map = set_fixmap_offset(FIX_TEXT_POKE0, phy);
+    void *map = ksu_set_fixmap_offset(FIX_TEXT_POKE0, phy);
     pr_debug("fixmap addr for patch 0x%lx: 0x%lx\n", p, (unsigned long)map);
 
-    ret = (int)copy_to_kernel_nofault(map, src, len);
+    ret = ksu_syms.copy_to_kernel_nofault ?
+          (int)ksu_syms.copy_to_kernel_nofault(map, src, len) : -ENOSYS;
 
-    clear_fixmap(FIX_TEXT_POKE0);
+    ksu_clear_fixmap(FIX_TEXT_POKE0);
 
     if (!ret) {
         if (flags & KSU_PATCH_TEXT_FLUSH_ICACHE)

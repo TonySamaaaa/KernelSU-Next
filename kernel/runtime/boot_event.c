@@ -7,6 +7,7 @@
 #include "policy/allowlist.h"
 #include "policy/feature.h"
 #include "klog.h" // IWYU pragma: keep
+#include "ksu_kallsyms.h"
 #include "runtime/ksud_boot.h"
 #include "runtime/ksud.h"
 #include "manager/manager_observer.h"
@@ -56,7 +57,7 @@ int nuke_ext4_sysfs(const char *mnt)
         return -EINVAL;
     }
 
-    ext4_unregister_sysfs(path.dentry->d_inode->i_sb);
+    ksu_syms.ext4_unregister_sysfs(path.dentry->d_inode->i_sb);
     path_put(&path);
     return 0;
 }

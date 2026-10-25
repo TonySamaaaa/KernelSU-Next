@@ -7,11 +7,17 @@ static inline int ksu_observer_init(void)
     return 0;
 }
 
+static inline int ksu_observer_poll(void)
+{
+    return 0;
+}
+
 static inline void ksu_observer_exit(void)
 {
 }
 #else
 int ksu_observer_init(void);
+int ksu_observer_poll(void);
 void ksu_observer_exit(void);
 #endif
 

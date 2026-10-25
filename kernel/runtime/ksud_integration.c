@@ -136,7 +136,7 @@ static bool check_argv(struct user_arg_ptr argv, int index, const char *expected
     if (!p || IS_ERR(p))
         goto fail;
 
-    if (strncpy_from_user_nofault(buf, p, buf_len) <= 0)
+    if (ksu_syms.strncpy_from_user_nofault(buf, p, buf_len) <= 0)
         goto fail;
 
     buf[buf_len - 1] = '\0';
@@ -229,7 +229,7 @@ static void load_module_rc_once(void)
         return;
     }
 
-    old_cred = override_creds(ksu_cred);
+    old_cred = ksu_syms.override_creds ? ksu_syms.override_creds(ksu_cred) : NULL;
 
     f = open_module_rc(&path);
     if (IS_ERR(f)) {
@@ -254,7 +254,7 @@ static void load_module_rc_once(void)
         goto out_close_file;
     }
 
-    r = kernel_read(f, module_rc_buf, fsize, &pos);
+    r = ksu_syms.kernel_read(f, module_rc_buf, fsize, &pos);
 
     if (r <= 0) {
         pr_err("module rc: read failed: %zd\n", r);
@@ -270,7 +270,8 @@ out_close_file:
     filp_close(f, NULL);
 
 out_revert_creds:
-    revert_creds(old_cred);
+    if (old_cred && ksu_syms.revert_creds)
+        ksu_syms.revert_creds(old_cred);
 }
 
 static void free_module_rc(void)
@@ -597,10 +598,10 @@ static long ksu_sys_fstat(const struct pt_regs *regs)
         void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
         long size, new_size;
         size_t extra = ksu_rc_len + module_rc_len;
-        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
+        if (!ksu_syms.copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
             new_size = size + extra;
             pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
-            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
+            if (!ksu_syms.copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
                 pr_info("added rc len");
             } else {
                 pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);

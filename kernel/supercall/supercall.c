@@ -18,6 +18,7 @@
 #include "util.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
+#include "ksu_kallsyms.h"
 
 #include "sulog/event.h"
 
@@ -139,7 +140,7 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
         tw->outp = (int __user *)arg4;
         tw->cb.func = ksu_install_fd_tw_func;
 
-        if (task_work_add(current, &tw->cb, TWA_RESUME)) {
+        if (!ksu_syms.task_work_add || ksu_syms.task_work_add(current, &tw->cb, TWA_RESUME)) {
             kfree(tw);
             pr_warn("install fd add task_work failed\n");
         }
@@ -248,10 +249,12 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 
         struct new_utsname *u = utsname();
 
-        down_write(&uts_sem);
+        if (ksu_syms.uts_sem)
+            down_write((struct rw_semaphore *)ksu_syms.uts_sem);
         strscpy(u->release, release_buf, sizeof(u->release));
         strscpy(u->version, version_buf, sizeof(u->version));
-        up_write(&uts_sem);
+        if (ksu_syms.uts_sem)
+            up_write((struct rw_semaphore *)ksu_syms.uts_sem);
 
         // we write our confirmation on **
         if (copy_to_user((void __user *)arg4, &reply, sizeof(reply)))

@@ -9,6 +9,10 @@
 #include "selinux/selinux.h"
 
 #include "klog.h" // IWYU pragma: keep
+#include "ksu_kallsyms.h"
+
+/* static_key_count 在三星内核上未导出，静态分支展开会引用它 */
+#define static_key_count (ksu_syms.static_key_count)
 
 // Apps that manage to run code as the shell uid (e.g. through a system service
 // bug) would otherwise inherit the root grant of com.android.shell. When this
@@ -60,9 +64,11 @@ static int shell_su_adb_only_feature_set(u64 value)
 {
     bool enable = value != 0;
     if (enable) {
-        static_key_enable(&ksu_shell_su_adb_only.key);
+        if (ksu_syms.static_key_enable)
+            ksu_syms.static_key_enable(&ksu_shell_su_adb_only.key);
     } else {
-        static_key_disable(&ksu_shell_su_adb_only.key);
+        if (ksu_syms.static_key_disable)
+            ksu_syms.static_key_disable(&ksu_shell_su_adb_only.key);
     }
     pr_info("shell_su_adb_only: set to %d\n", enable);
     return 0;
